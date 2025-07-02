@@ -4,12 +4,39 @@ import "dotenv/config";
 import { MongoClient, ObjectId, ServerApiVersion } from "mongodb";
 import Stripe from "stripe";
 
+// this is required import
+import jwt from "jsonwebtoken";
+import cookieParser from "cookie-parser";
+
 const app = express();
 const port = process.env.PORT || 3000;
 const stripe = new Stripe(process.env.pAYMENT_GATEWAY_kEY);
 
-app.use(cors());
+// add origin url and set app into cookie parser
+app.use(
+  cors({
+    origin: ["http://localhost:5173"],
+    credentials: true,
+  }),
+);
 app.use(express.json());
+app.use(cookieParser());
+
+// token verifier
+
+const verifyToken = (req, res, next) => {
+  const token = req?.cookies?.token;
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+  jwt.verify(token, process.env.JWT_SECRET, (error, decoded) => {
+    if (error) {
+      return res.status(401).send({ message: "unauthorized access" });
+    }
+    req.decoded = decoded;
+    next();
+  });
+};
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(process.env.MONGODB_URI, {
@@ -29,15 +56,55 @@ async function run() {
     const trackingCollection = dataBase.collection("tracking");
     const usersCollection = dataBase.collection("users");
 
+    // jwt token related api
+
+    // mounting token in the cookie
+    app.post("/validation", async (req, res) => {
+      const { email } = req.body;
+      const user = { email };
+      const token = jwt.sign(user, process.env.JWT_SECRET, {
+        expiresIn: "1d",
+      });
+      // send to cookie
+      res.cookie("token", token, {
+        httpOnly: true,
+        secure: false,
+      });
+      // send response
+      res.send({ success: true });
+    });
+
+    // unmounting cookies after logout user
+    app.post("/logout", (req, res) => {
+      res.clearCookie("token", {
+        httpOnly: true,
+        secure: false,
+        sameSite: "strict",
+      });
+      res.status(200).send({ message: "Logged out, cookie cleared" });
+    });
     // users collection
 
     app.post("/users", async (req, res) => {
       const email = req.body.email;
       const userExists = await usersCollection.findOne({ email });
+      const currentTime = new Date().toISOString();
       if (userExists) {
-        return res
-          .status(200)
-          .send({ message: "user already exist", inserted: false });
+        // update last login info
+        const updateLastLog = await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              last_log_in: currentTime,
+            },
+          },
+        );
+
+        return res.status(200).send({
+          message: "user already exist",
+          inserted: false,
+          result: updateLastLog,
+        });
       }
       const user = req.body;
       const result = await usersCollection.insertOne(user);
@@ -45,10 +112,9 @@ async function run() {
     });
 
     // parcels api get
-    app.get("/parcels", async (req, res) => {
+    app.get("/parcels", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
-
         const query = email ? { senderEmail: email } : {};
         const options = {
           sort: { creation_date: -1 }, // latest first
@@ -234,7 +300,7 @@ async function run() {
     // });
     // get payment history by email
 
-    app.get("/myPayments", async (req, res) => {
+    app.get("/myPayments", verifyToken, async (req, res) => {
       try {
         const email = req.query.email;
 
