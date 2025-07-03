@@ -170,13 +170,41 @@ async function run() {
 
     app.get("/riders/active", async (req, res) => {
       try {
+        const search = req.query.search || "";
+        const query = {
+          status: "active",
+          $or: [
+            { name: { $regex: search, $options: "i" } },
+            { email: { $regex: search, $options: "i" } },
+          ],
+        };
+
         const activeRiders = await ridersCollection
-          .find({ status: "active" })
+          .find(query)
           .sort({ appliedAt: -1 })
           .toArray();
+
         res.send(activeRiders);
       } catch (error) {
         res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // admin control to deactivate rider
+
+    app.patch("/riders/:id", async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      try {
+        const result = await ridersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { status } },
+        );
+
+        res.send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Failed to update status" });
       }
     });
 
