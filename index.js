@@ -112,7 +112,7 @@ async function run() {
       res.send(result);
     });
 
-    // all  riders
+    // all   riders who applied for
 
     app.post("/riders", async (req, res) => {
       try {
@@ -133,6 +133,48 @@ async function run() {
         const riderInfo = req.body;
         const result = await ridersCollection.insertOne(riderInfo);
         res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // get all rider whose are pending status
+    app.get("/riders/pending", async (req, res) => {
+      try {
+        const pendingRiders = await ridersCollection
+          .find({ status: "pending" })
+          .sort({ appliedAt: -1 }) // latest first
+          .toArray();
+
+        res.send(pendingRiders);
+      } catch (error) {
+        console.error("❌ Error fetching pending riders:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // update raiders status or accept or reject raider
+    app.patch("/riders/:id", async (req, res) => {
+      const { id } = req.params;
+      const { status } = req.body;
+
+      const result = await ridersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        { $set: { status } },
+      );
+
+      res.send(result);
+    });
+
+    // get all active riders
+
+    app.get("/riders/active", async (req, res) => {
+      try {
+        const activeRiders = await ridersCollection
+          .find({ status: "active" })
+          .sort({ appliedAt: -1 })
+          .toArray();
+        res.send(activeRiders);
       } catch (error) {
         res.status(500).send({ message: "Internal Server Error" });
       }
