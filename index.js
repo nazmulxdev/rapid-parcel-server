@@ -55,6 +55,7 @@ async function run() {
     const paymentsCollection = dataBase.collection("payments");
     const trackingCollection = dataBase.collection("tracking");
     const usersCollection = dataBase.collection("users");
+    const ridersCollection = dataBase.collection("riders");
 
     // jwt token related api
 
@@ -111,10 +112,39 @@ async function run() {
       res.send(result);
     });
 
+    // all  riders
+
+    app.post("/riders", async (req, res) => {
+      try {
+        const { email } = req.body;
+        // checking rider email
+        if (!email) {
+          return res.status(400).send({ message: "Email is required" });
+        }
+        // checking is the rider data is existed in the database
+        const existingRider = await ridersCollection.findOne({ email });
+        if (existingRider) {
+          return res.status(409).send({
+            message: "User has already applied as a rider",
+            alreadyApplied: true,
+          });
+        }
+
+        const riderInfo = req.body;
+        const result = await ridersCollection.insertOne(riderInfo);
+        res.status(201).send(result);
+      } catch (error) {
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
     // parcels api get
     app.get("/parcels", verifyToken, async (req, res) => {
       try {
         const { email } = req.query;
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
         const query = email ? { senderEmail: email } : {};
         const options = {
           sort: { creation_date: -1 }, // latest first
@@ -303,6 +333,10 @@ async function run() {
     app.get("/myPayments", verifyToken, async (req, res) => {
       try {
         const email = req.query.email;
+
+        if (req.decoded.email !== email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
 
         const userPayments = await paymentsCollection
           .find({ userEmail: email })
