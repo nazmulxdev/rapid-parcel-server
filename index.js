@@ -154,16 +154,65 @@ async function run() {
     });
 
     // update raiders status or accept or reject raider
+    // app.patch("/riders/:id", async (req, res) => {
+    //   const { id } = req.params;
+    //   const { status } = req.body;
+
+    //   const result = await ridersCollection.updateOne(
+    //     { _id: new ObjectId(id) },
+    //     { $set: { status } },
+    //   );
+
+    //   res.send(result);
+    // });
+
+    //PATCH for rider status update (accept, reject, deactivate, etc.)
     app.patch("/riders/:id", async (req, res) => {
       const { id } = req.params;
-      const { status } = req.body;
+      const { status, email } = req.body;
 
-      const result = await ridersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { status } },
-      );
+      if (!status) {
+        return res.status(400).send({ message: "Status is required." });
+      }
 
-      res.send(result);
+      const query = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: { status },
+      };
+
+      try {
+        const result = await ridersCollection.updateOne(query, updatedDoc);
+
+        if (result.modifiedCount === 0) {
+          return res
+            .status(404)
+            .send({ message: "Rider not found or already status has updated" });
+        }
+
+        // update user role from accepting rider
+        let roleResult = null;
+        if (status === "active" && email) {
+          const userQuery = { email };
+          const userUpdatedDoc = {
+            $set: {
+              role: "rider",
+            },
+          };
+          roleResult = await usersCollection.updateOne(
+            userQuery,
+            userUpdatedDoc,
+          );
+        }
+
+        res.send({
+          message: "Rider status updated",
+          riderUpdated: result,
+          userRoleUpdate: roleResult,
+        });
+      } catch (error) {
+        console.error("🚨 Error updating rider status:", error);
+        res.status(500).send({ message: "Failed to update status" });
+      }
     });
 
     // get all active riders
@@ -192,21 +241,21 @@ async function run() {
 
     // admin control to deactivate rider
 
-    app.patch("/riders/:id", async (req, res) => {
-      const { id } = req.params;
-      const { status } = req.body;
+    // app.patch("/riders/:id", async (req, res) => {
+    //   const { id } = req.params;
+    //   const { status } = req.body;
 
-      try {
-        const result = await ridersCollection.updateOne(
-          { _id: new ObjectId(id) },
-          { $set: { status } },
-        );
+    //   try {
+    //     const result = await ridersCollection.updateOne(
+    //       { _id: new ObjectId(id) },
+    //       { $set: { status } },
+    //     );
 
-        res.send(result);
-      } catch (error) {
-        res.status(500).send({ message: "Failed to update status" });
-      }
-    });
+    //     res.send(result);
+    //   } catch (error) {
+    //     res.status(500).send({ message: "Failed to update status" });
+    //   }
+    // });
 
     // parcels api get
     app.get("/parcels", verifyToken, async (req, res) => {
