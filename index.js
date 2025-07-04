@@ -22,22 +22,6 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
-// token verifier
-
-const verifyToken = (req, res, next) => {
-  const token = req?.cookies?.token;
-  if (!token) {
-    return res.status(401).send({ message: "unauthorized access" });
-  }
-  jwt.verify(token, process.env.JWT_SECRET, (error, decoded) => {
-    if (error) {
-      return res.status(401).send({ message: "unauthorized access" });
-    }
-    req.decoded = decoded;
-    next();
-  });
-};
-
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(process.env.MONGODB_URI, {
   serverApi: {
@@ -56,6 +40,37 @@ async function run() {
     const trackingCollection = dataBase.collection("tracking");
     const usersCollection = dataBase.collection("users");
     const ridersCollection = dataBase.collection("riders");
+
+    // custom middleware
+
+    // token verifier
+
+    const verifyToken = (req, res, next) => {
+      const token = req?.cookies?.token;
+      if (!token) {
+        return res.status(401).send({ message: "unauthorized access" });
+      }
+      jwt.verify(token, process.env.JWT_SECRET, (error, decoded) => {
+        if (error) {
+          return res.status(401).send({ message: "unauthorized access" });
+        }
+        req.decoded = decoded;
+        next();
+      });
+    };
+
+    // verify admin
+
+    const verifyAdmin = async (req, res, next) => {
+      const email = req.decoded.email;
+      const user = await usersCollection.findOne({ email });
+      if (!user || user?.role !== "admin") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access - admin only" });
+      }
+      next();
+    };
 
     // jwt token related api
 
@@ -112,9 +127,97 @@ async function run() {
       res.send(result);
     });
 
+    // admin route
+    app.get("/users/search", async (req, res) => {
+      const { query } = req.query;
+
+      if (!query) {
+        return res.status(400).send({ message: "Search query is required." });
+      }
+
+      try {
+        const users = await usersCollection
+          .find({
+            $or: [
+              { name: { $regex: query, $options: "i" } },
+              { email: { $regex: query, $options: "i" } },
+            ],
+          })
+          .project({
+            name: 1,
+            email: 1,
+            role: 1,
+            created_at: 1,
+            last_log_in: 1,
+          })
+          .limit(10)
+          .toArray();
+
+        res.send(users);
+      } catch (error) {
+        console.error("❌ Failed to search users:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // role change api PATCH /users/:id/role
+
+    app.patch("/users/:id/role", verifyToken, verifyAdmin, async (req, res) => {
+      const { id } = req.params;
+      const { role } = req.body;
+
+      if (!role || !["admin", "user", "rider"].includes(role)) {
+        return res.status(400).send({ message: "Invalid role provided" });
+      }
+
+      try {
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role } },
+        );
+
+        if (result.modifiedCount > 0) {
+          res.send({ message: `User role updated to ${role}`, result });
+        } else {
+          res
+            .status(404)
+            .send({ message: "User not found or already has that role" });
+        }
+      } catch (error) {
+        console.error("❌ Failed to update user role:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
+    // get role of user by email
+
+    app.get("/users/role/:email", async (req, res) => {
+      const { email } = req.params;
+
+      if (!email) {
+        return res.status(400).send({ message: "Email is required" });
+      }
+
+      try {
+        const user = await usersCollection.findOne(
+          { email },
+          { projection: { role: 1 } }, // only return the role field
+        );
+
+        if (!user) {
+          return res.status(404).send({ message: "User not found" });
+        }
+
+        res.send({ role: user.role });
+      } catch (error) {
+        console.error("❌ Error getting user role:", error);
+        res.status(500).send({ message: "Internal server error" });
+      }
+    });
+
     // all   riders who applied for
 
-    app.post("/riders", async (req, res) => {
+    app.post("/riders", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const { email } = req.body;
         // checking rider email
@@ -139,7 +242,7 @@ async function run() {
     });
 
     // get all rider whose are pending status
-    app.get("/riders/pending", async (req, res) => {
+    app.get("/riders/pending", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const pendingRiders = await ridersCollection
           .find({ status: "pending" })
@@ -167,7 +270,7 @@ async function run() {
     // });
 
     //PATCH for rider status update (accept, reject, deactivate, etc.)
-    app.patch("/riders/:id", async (req, res) => {
+    app.patch("/riders/:id", verifyToken, verifyAdmin, async (req, res) => {
       const { id } = req.params;
       const { status, email } = req.body;
 
@@ -217,7 +320,7 @@ async function run() {
 
     // get all active riders
 
-    app.get("/riders/active", async (req, res) => {
+    app.get("/riders/active", verifyToken, verifyAdmin, async (req, res) => {
       try {
         const search = req.query.search || "";
         const query = {
