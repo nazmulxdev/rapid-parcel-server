@@ -72,6 +72,18 @@ async function run() {
       next();
     };
 
+    // verify rider
+    const verifyRider = async (req, res, next) => {
+      const email = req.decoded.email;
+      const user = await usersCollection.findOne({ email });
+      if (!user || user?.role !== "rider") {
+        return res
+          .status(403)
+          .send({ message: "Forbidden access - rider only" });
+      }
+      next();
+    };
+
     // jwt token related api
 
     // mounting token in the cookie
@@ -127,8 +139,115 @@ async function run() {
       res.send(result);
     });
 
+    // get all paid undelivered parcel
+    app.get(
+      "/parcels/assignable",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const parcels = await parcelCollection
+            .find({
+              payment_status: "paid",
+              delivery_status: "pending",
+            })
+            .sort({ creation_date: -1 })
+            .toArray();
+
+          res.send(parcels);
+        } catch (error) {
+          res
+            .status(500)
+            .send({ message: "Failed to load assignable parcels" });
+        }
+      },
+    );
+
+    // rider task
+
+    app.get("/rider/tasks", verifyToken, verifyRider, async (req, res) => {
+      try {
+        const { email } = req.query;
+
+        if (!email) {
+          return res.status(400).send({ message: "Rider email is required" });
+        }
+
+        // match parcels where rider is assigned and status is pending (in progress)
+        const query = {
+          assigned_rider_email: email,
+          delivery_status: { $in: ["assigned", "in_transit", "delivered"] },
+        };
+
+        const parcels = await parcelCollection
+          .find(query)
+          .sort({ creation_date: -1 })
+          .toArray();
+
+        res.send(parcels);
+      } catch (error) {
+        console.error("❌ Failed to get rider tasks:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // rider route to change the parcel status
+    app.patch(
+      "/parcels/:id/status",
+      verifyToken,
+      verifyRider,
+      async (req, res) => {
+        const { id } = req.params;
+        const { delivery_status } = req.body;
+
+        if (!["in_transit", "delivered"].includes(delivery_status)) {
+          return res.status(400).send({ message: "Invalid status update" });
+        }
+
+        const result = await parcelCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { delivery_status } },
+        );
+
+        res.send(result);
+      },
+    );
+
+    //assign rider to delivery parcel
+    app.patch(
+      "/parcels/:id/assign",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        const { id } = req.params;
+        const { riderEmail, riderName } = req.body;
+
+        if (!riderEmail || !riderName) {
+          return res.status(400).send({ message: "Rider info is required" });
+        }
+
+        try {
+          const result = await parcelCollection.updateOne(
+            { _id: new ObjectId(id) },
+            {
+              $set: {
+                assigned_rider_email: riderEmail,
+                assigned_rider_name: riderName,
+                delivery_status: "assigned",
+              },
+            },
+          );
+
+          res.send({ message: "Rider assigned successfully", result });
+        } catch (err) {
+          console.error("❌ Failed to assign rider:", err);
+          res.status(500).send({ message: "Failed to assign rider" });
+        }
+      },
+    );
+
     // admin route
-    app.get("/users/search", async (req, res) => {
+    app.get("/users/search", verifyToken, verifyAdmin, async (req, res) => {
       const { query } = req.query;
 
       if (!query) {
@@ -217,7 +336,7 @@ async function run() {
 
     // all   riders who applied for
 
-    app.post("/riders", verifyToken, verifyAdmin, async (req, res) => {
+    app.post("/riders", verifyToken, async (req, res) => {
       try {
         const { email } = req.body;
         // checking rider email
