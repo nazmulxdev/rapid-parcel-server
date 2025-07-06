@@ -176,7 +176,7 @@ async function run() {
         // match parcels where rider is assigned and status is pending (in progress)
         const query = {
           assigned_rider_email: email,
-          delivery_status: { $in: ["assigned", "in_transit", "delivered"] },
+          delivery_status: { $in: ["assigned", "in_transit"] },
         };
 
         const parcels = await parcelCollection
@@ -190,6 +190,110 @@ async function run() {
         res.status(500).send({ message: "Internal Server Error" });
       }
     });
+
+    // get completed deliveries for a rider
+    app.get(
+      "/rider/completed-parcels",
+      verifyToken,
+      verifyRider,
+      async (req, res) => {
+        try {
+          const { email } = req.query;
+
+          if (!email) {
+            return res
+              .status(400)
+              .send({ message: "Rider email is required." });
+          }
+
+          const completedStatuses = ["delivered", "service_center_delivered"];
+          const query = {
+            assigned_rider_email: email,
+            delivery_status: { $in: completedStatuses },
+          };
+
+          const parcels = await parcelCollection
+            .find(query)
+            .sort({ creation_date: -1 }) // newest first
+            .toArray();
+
+          res.send(parcels);
+        } catch (error) {
+          console.error("❌ Error fetching completed rider parcels:", error);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
+      },
+    );
+
+    // Rider requests cashout for a completed delivery
+    app.patch(
+      "/rider/cashOut/:parcelId",
+      verifyToken,
+      verifyRider,
+      async (req, res) => {
+        try {
+          const { parcelId } = req.params;
+          const { rider_earned } = req.body;
+
+          // Step 1: Validate ObjectId
+          if (!ObjectId.isValid(parcelId)) {
+            return res.status(400).send({ message: "Invalid Parcel ID" });
+          }
+
+          // Step 2: Find the parcel
+          const parcel = await parcelCollection.findOne({
+            _id: new ObjectId(parcelId),
+          });
+
+          if (!parcel) {
+            return res.status(404).send({ message: "Parcel not found" });
+          }
+
+          // Step 3: Only allow cashout for delivered parcels
+          const allowedStatuses = ["delivered", "service_center_delivered"];
+          if (!allowedStatuses.includes(parcel.delivery_status)) {
+            return res
+              .status(400)
+              .send({ message: "Parcel is not eligible for cashout" });
+          }
+
+          // Step 4: Prevent duplicate requests
+          if (parcel.cashout_status && parcel.cashout_status !== "none") {
+            return res
+              .status(409)
+              .send({ message: "Cashout already requested or paid" });
+          }
+
+          rider_earned = Number(rider_earned);
+
+          if (isNaN(rider_earned)) {
+            return res
+              .status(400)
+              .send({ message: "rider_earned must be a valid number" });
+          }
+
+          // Step 5: Update parcel with cashout status
+          const result = await parcelCollection.updateOne(
+            { _id: new ObjectId(parcelId) },
+            {
+              $set: {
+                rider_earned: rider_earned,
+                cashout_status: "requested",
+                cashout_requested_at: new Date(),
+              },
+            },
+          );
+
+          res.send({
+            message: "Cashout requested successfully 💸",
+            result,
+          });
+        } catch (error) {
+          console.error("❌ Cashout request error:", error);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
+      },
+    );
 
     // rider route to change the parcel status
     app.patch(
@@ -210,6 +314,91 @@ async function run() {
         );
 
         res.send(result);
+      },
+    );
+
+    // get requested delivered parcels by rider
+    app.get("/admin/cashouts", verifyToken, verifyAdmin, async (req, res) => {
+      try {
+        const { status } = req.query;
+
+        const completedStatuses = ["delivered", "service_center_delivered"];
+        const query = {
+          cashout_status: status,
+          delivery_status: { $in: completedStatuses },
+        };
+
+        const parcels = await parcelCollection
+          .find(query)
+          .sort({ cashout_requested_at: -1 }) // newest first
+          .toArray();
+
+        res.send(parcels);
+      } catch (error) {
+        console.error("❌ Error fetching completed rider parcels:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // confirm riders payment by admin
+    app.patch(
+      "/admin/cashOut/:parcelId",
+      verifyToken,
+      verifyAdmin,
+      async (req, res) => {
+        try {
+          const { parcelId } = req.params;
+          const { confirmed_by } = req.body;
+
+          if (!ObjectId.isValid(parcelId)) {
+            return res.status(400).send({ message: "Invalid Parcel ID" });
+          }
+
+          // Ensure admin name/email is provided
+          if (!confirmed_by) {
+            return res
+              .status(400)
+              .send({ message: "Admin identifier is required." });
+          }
+
+          // Step 1: Find the parcel
+          const parcel = await parcelCollection.findOne({
+            _id: new ObjectId(parcelId),
+          });
+
+          if (!parcel) {
+            return res.status(404).send({ message: "Parcel not found" });
+          }
+
+          // Step 2: Check if already paid
+          if (parcel.cashout_status === "paid") {
+            return res
+              .status(409)
+              .send({ message: "Cashout already marked as paid" });
+          }
+
+          // Step 3: Update the parcel
+          const updateDoc = {
+            $set: {
+              cashout_status: "paid",
+              cashout_paid_at: new Date(),
+              cashout_confirmed_by: confirmed_by,
+            },
+          };
+
+          const result = await parcelCollection.updateOne(
+            { _id: new ObjectId(parcelId) },
+            updateDoc,
+          );
+
+          res.send({
+            message: "Cashout marked as paid ✅",
+            result,
+          });
+        } catch (error) {
+          console.error("❌ Error confirming rider cashout:", error);
+          res.status(500).send({ message: "Internal Server Error" });
+        }
       },
     );
 
